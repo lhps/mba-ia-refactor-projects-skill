@@ -1,6 +1,16 @@
-from database import db
-from datetime import datetime
 import hashlib
+import hmac
+
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from database import db
+from utils.helpers import utcnow
+
+VALID_ROLES = ("user", "admin", "manager")
+DEFAULT_ROLE = "user"
+MIN_PASSWORD_LENGTH = 8
+_LEGACY_MD5_LENGTH = 32
+
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -9,30 +19,36 @@ class User(db.Model):
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(50), default='user')
+    role = db.Column(db.String(50), default=DEFAULT_ROLE)
     active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utcnow)
 
     def to_dict(self):
+        """Serialização pública: o hash da senha nunca sai da API."""
         return {
             'id': self.id,
             'name': self.name,
             'email': self.email,
-            'password': self.password,
             'role': self.role,
             'active': self.active,
-            'created_at': str(self.created_at)
+            'created_at': str(self.created_at),
         }
 
-    def set_password(self, pwd):
+    def set_password(self, raw_password):
+        self.password = generate_password_hash(raw_password)
 
-        self.password = hashlib.md5(pwd.encode()).hexdigest()
+    def check_password(self, raw_password):
+        """Verifica a senha; hashes MD5 legados são aceitos uma vez e migrados para o algoritmo atual."""
+        if self._has_legacy_hash():
+            legacy = hashlib.md5(raw_password.encode()).hexdigest()
+            if hmac.compare_digest(self.password, legacy):
+                self.set_password(raw_password)
+                return True
+            return False
+        return check_password_hash(self.password, raw_password)
 
-    def check_password(self, pwd):
-        return self.password == hashlib.md5(pwd.encode()).hexdigest()
+    def _has_legacy_hash(self):
+        return len(self.password or "") == _LEGACY_MD5_LENGTH and "$" not in self.password
 
     def is_admin(self):
-        if self.role == 'admin':
-            return True
-        else:
-            return False
+        return self.role == 'admin'
